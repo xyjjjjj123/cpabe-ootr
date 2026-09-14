@@ -1,7 +1,7 @@
-# Ciphertext-Bound Online/Offline One-Time Re-Encryption
+# Low-Latency Online/Offline One-Time Re-Encryption for Attribute-Key-Free CP-ABE
 
-Minimal reproducibility code for the experiments in our ICASSP 2027 submission on
-ciphertext-bound online/offline one-time re-encryption for attribute-key-free CP-ABE.
+Minimal reproducibility code for the experiments reported in our ICASSP 2027 submission,
+“Low-Latency Online/Offline One-Time Re-Encryption for Attribute-Key-Free CP-ABE.”
 
 ## Scope
 
