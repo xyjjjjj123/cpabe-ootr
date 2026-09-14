@@ -1,7 +1,8 @@
 # Low-Latency Online/Offline One-Time Re-Encryption for Attribute-Key-Free CP-ABE
 
-Minimal reproducibility code for the experiments reported in our ICASSP 2027 submission,
-“Low-Latency Online/Offline One-Time Re-Encryption for Attribute-Key-Free CP-ABE.”
+This repository provides the minimal reproducibility code for the experiments reported
+in our ICASSP 2027 submission, “Low-Latency Online/Offline One-Time Re-Encryption for
+Attribute-Key-Free CP-ABE.”
 
 ## Scope
 
@@ -74,7 +75,7 @@ python cpu_benchmark.py
 Main settings:
 
 - pairing group: `SS512`
-- policy sizes: \(l \in \{2,4,6,8,10,15,20\}\)
+- policy sizes: policy sizes: `l = {2, 4, 6, 8, 10, 15, 20}`
 - 10 warm-up batches per metric
 - 50 measured batches per metric
 - fixed batch sizes:
@@ -102,7 +103,7 @@ python android_benchmark.py
 Main settings:
 
 - pairing group: `SS512`
-- policy sizes: \(l \in \{2,4,6,8,10,15,20,30,40,50\}\)
+- policy sizes: `l = {2, 4, 6, 8, 10, 15, 20, 30, 40, 50}`
 - 10 warm-up runs
 - 50 measured runs
 - individual executions are timed (not batches)
@@ -126,7 +127,7 @@ python android_controlled_benchmark.py
 Main settings:
 
 - pairing group: `SS512`
-- representative policy sizes: \(l \in \{10,30,50\}\)
+- representative policy sizes: `l = {10, 30, 50}`
 - 10 warm-up runs
 - 50 measured runs
 - all measured samples are retained; no trimming
@@ -156,12 +157,12 @@ python storage_benchmark.py
 Main settings:
 
 - pairing group: `SS512`
-- policy sizes: \(l \in \{10,20,30,40,50\}\)
+- policy sizes: `l = {10, 20, 30, 40, 50}`
 - token-pool size: `q = 5`
 - 50 repetitions per policy size
 - serialized size includes:
-  - one scalar \(z_j\)
-  - \(2l\) precomputed group elements
+  - one scalar `z_j`
+  - `2l` precomputed group elements
   - one-byte state flag
 - Python object/list/dictionary overhead is excluded
 
@@ -205,3 +206,11 @@ The copyrighted baseline paper itself is not redistributed in this repository.
 
 The benchmark code in this repository is released under the MIT License. Third-party
 software, including Charm-Crypto, remains subject to its own license.
+
+## Citation
+
+If you use this benchmark code, please cite our ICASSP 2027 paper:
+
+**Low-Latency Online/Offline One-Time Re-Encryption for Attribute-Key-Free CP-ABE.**
+
+Full citation information will be added after publication.
