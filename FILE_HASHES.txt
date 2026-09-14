@@ -1,0 +1,5 @@
+SHA-256 of benchmark scripts (repository preparation did not alter script bytes):
+201b95f8572bc9d216817de7bf8d17f852051b228340423f8fc75991c942de3f  cpu_benchmark.py
+76b2ad89dbddee2af03a0f1a1b8c363c4efd5e513111510fb4e4e8709978cdf3  android_benchmark.py
+c95614019124cfe2c20d1e94823c81cd50ba63fca00246c0ae8cf2cde75b5229  android_controlled_benchmark.py
+e83d33b14f936faeeba85a9a309df892a9df55fb6a31b3ebcb8b2842dfdd03ad  storage_benchmark.py

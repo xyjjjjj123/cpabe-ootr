@@ -1,0 +1,5 @@
+# Python-side dependencies used by the benchmarks.
+# Charm-Crypto may require native dependencies; see README.md.
+charm-crypto-framework
+numpy
+matplotlib
