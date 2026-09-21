@@ -18,6 +18,15 @@ from charm.toolbox.pairinggroup import (
 group = PairingGroup('SS512')
 
 
+def sample_nonzero_z():
+    """Sample a nonzero one-time blinding factor for invertible recovery."""
+    zero = group.init(ZR, 0)
+    z = group.random(ZR)
+    while z == zero:
+        z = group.random(ZR)
+    return z
+
+
 # ============================================================
 # Experiment settings
 # ============================================================
@@ -157,7 +166,7 @@ def assemble_reencrypted_ct(c0_prime, c1_hat, c2_hat, c1_prime, c2_prime):
 
 def prepare_token(c1, c2):
     """Prepare one ciphertext-bound token, including fresh z_j and state."""
-    z = group.random(ZR)
+    z = sample_nonzero_z()
     c1_hat = [c ** z for c in c1]
     c2_hat = [c ** z for c in c2]
     return {
@@ -284,7 +293,7 @@ def final_unblinding_key_recovery(
 
 def baseline_online_request(request):
     # Baseline paper: fresh one-time z is sampled after the access request.
-    z = group.random(ZR)
+    z = sample_nonzero_z()
     c1_hat = [c ** z for c in request["c1"]]
     c2_hat = [c ** z for c in request["c2"]]
 
@@ -322,7 +331,7 @@ def ours_online_request(request):
 # ============================================================
 
 def baseline_receiver_request(request):
-    z = group.random(ZR)
+    z = sample_nonzero_z()
     c1_hat = [c ** z for c in request["c1"]]
     c2_hat = [c ** z for c in request["c2"]]
 
@@ -376,7 +385,7 @@ def ours_receiver_request(request):
 
 def baseline_path_request(request):
     # Receiver-side online one-time re-encryption
-    z = group.random(ZR)
+    z = sample_nonzero_z()
     c1_hat = [c ** z for c in request["c1"]]
     c2_hat = [c ** z for c in request["c2"]]
 
