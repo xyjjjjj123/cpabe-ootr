@@ -6,6 +6,7 @@ import platform
 import statistics
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 
 from charm.toolbox.pairinggroup import PairingGroup, ZR, G1, GT, pair
@@ -49,14 +50,10 @@ def safe_shell(command):
 
 
 def read_float_file(path):
+    """Read a numeric sysfs value without guessing its unit."""
     try:
-        s = Path(path).read_text().strip()
-        v = float(s)
-        # Most Android sysfs thermal values are milli-Celsius.
-        if v > 200:
-            v /= 1000.0
-        return v
-    except Exception:
+        return float(Path(path).read_text().strip())
+    except (OSError, ValueError):
         return None
 
 
@@ -68,10 +65,13 @@ def read_battery_temp_c():
     for p in candidates:
         v = read_float_file(p)
         if v is not None:
-            # battery/temp is often deci-Celsius on some devices
-            if v > 80:
+            # Battery temp often uses deci-Celsius (e.g., 350 -> 35C).
+            # Some devices expose milli-Celsius; handle both conventions.
+            if abs(v) >= 1000:
+                v /= 1000.0
+            elif abs(v) > 80:
                 v /= 10.0
-            return v
+            return v if -20 <= v <= 100 else None
     return None
 
 
@@ -81,8 +81,14 @@ def read_max_thermal_zone_c():
     try:
         for p in base.glob("thermal_zone*/temp"):
             v = read_float_file(p)
-            if v is not None and -20 <= v <= 150:
-                temps.append(v)
+            if v is not None:
+                # Thermal-zone temp is normally in milli-Celsius.
+                if abs(v) >= 1000:
+                    v /= 1000.0
+                elif abs(v) > 150:
+                    v /= 10.0
+                if -20 <= v <= 150:
+                    temps.append(v)
     except Exception:
         pass
     return max(temps) if temps else None
@@ -145,7 +151,7 @@ def pct_reduction(baseline, ours):
 # Cryptographic helpers
 # ============================================================
 
-def assemble_reencrypted_ct(c0_prime, c1_hat, c2_hat, c1_prime, c2_prime):
+def assemble_reencrypted_ct(policy_ref, c0_prime, c1_hat, c2_hat, c1_prime, c2_prime):
     l = len(c1_hat)
     assert len(c2_hat) == l
     assert len(c1_prime) == l
@@ -155,11 +161,20 @@ def assemble_reencrypted_ct(c0_prime, c1_hat, c2_hat, c1_prime, c2_prime):
         (c1_hat[i], c2_hat[i], c1_prime[i], c2_prime[i])
         for i in range(l)
     ]
-    return (c0_prime, rows)
+    return (policy_ref, c0_prime, rows)
+
+
+def sample_nonzero_z():
+    """Sample from Z_p^*, matching the valid recovery domain."""
+    zero = group.init(ZR, 0)
+    z = group.random(ZR)
+    while z == zero:
+        z = group.random(ZR)
+    return z
 
 
 def prepare_token(c1, c2):
-    z = group.random(ZR)
+    z = sample_nonzero_z()
     c1_hat = [c ** z for c in c1]
     c2_hat = [c ** z for c in c2]
 
@@ -172,9 +187,20 @@ def prepare_token(c1, c2):
 
 
 def consume_token(token):
+    # Single-threaded in-memory state update; no concurrency guarantee.
     if token["used"]:
         raise RuntimeError("Token reuse detected.")
     token["used"] = True
+    return token
+
+
+def take_token(ctx, pools):
+    """Lookup/consume one ciphertext-bound token inside the timed operation."""
+    queue = pools[ctx["ct_id"]]
+    if not queue:
+        raise RuntimeError("Token pool exhausted; benchmark needs a fresh pool.")
+    token = consume_token(queue[0])
+    queue.popleft()
     return token
 
 
@@ -201,6 +227,8 @@ def test_phase(
 
         aggregate = n_i if aggregate is None else aggregate * n_i
 
+    # Cost-only equality operation: the synthetic inputs are not a valid
+    # encrypted policy instance. This comparison does NOT certify access.
     _ = (aggregate == c0_prime)
     return aggregate
 
@@ -246,12 +274,13 @@ def final_unblinding(c0, aggregate_partial, z):
 
 def baseline_online(ctx):
     # Fresh z is sampled in the online critical path.
-    z = group.random(ZR)
+    z = sample_nonzero_z()
 
     c1_hat = [c ** z for c in ctx["c1"]]
     c2_hat = [c ** z for c in ctx["c2"]]
 
     ct_prime = assemble_reencrypted_ct(
+        ctx["policy_ref"],
         ctx["c0_prime"],
         c1_hat,
         c2_hat,
@@ -266,10 +295,11 @@ def offline_token_operation(ctx):
     _ = token
 
 
-def ours_online(ctx, token):
-    token = consume_token(token)
+def ours_online(ctx, pools):
+    token = take_token(ctx, pools)
 
     ct_prime = assemble_reencrypted_ct(
+        ctx["policy_ref"],
         ctx["c0_prime"],
         token["c1_hat"],
         token["c2_hat"],
@@ -280,12 +310,13 @@ def ours_online(ctx, token):
 
 
 def baseline_receiver(ctx):
-    z = group.random(ZR)
+    z = sample_nonzero_z()
 
     c1_hat = [c ** z for c in ctx["c1"]]
     c2_hat = [c ** z for c in ctx["c2"]]
 
     ct_prime = assemble_reencrypted_ct(
+        ctx["policy_ref"],
         ctx["c0_prime"],
         c1_hat,
         c2_hat,
@@ -301,10 +332,11 @@ def baseline_receiver(ctx):
     )
 
 
-def ours_receiver(ctx, token):
-    token = consume_token(token)
+def ours_receiver(ctx, pools):
+    token = take_token(ctx, pools)
 
     ct_prime = assemble_reencrypted_ct(
+        ctx["policy_ref"],
         ctx["c0_prime"],
         token["c1_hat"],
         token["c2_hat"],
@@ -321,12 +353,13 @@ def ours_receiver(ctx, token):
 
 
 def baseline_path(ctx):
-    z = group.random(ZR)
+    z = sample_nonzero_z()
 
     c1_hat = [c ** z for c in ctx["c1"]]
     c2_hat = [c ** z for c in ctx["c2"]]
 
     ct_prime = assemble_reencrypted_ct(
+        ctx["policy_ref"],
         ctx["c0_prime"],
         c1_hat,
         c2_hat,
@@ -361,10 +394,11 @@ def baseline_path(ctx):
     )
 
 
-def ours_path(ctx, token):
-    token = consume_token(token)
+def ours_path(ctx, pools):
+    token = take_token(ctx, pools)
 
     ct_prime = assemble_reencrypted_ct(
+        ctx["policy_ref"],
         ctx["c0_prime"],
         token["c1_hat"],
         token["c2_hat"],
@@ -406,6 +440,10 @@ def ours_path(ctx, token):
 def make_context(l):
     return {
         "l": l,
+        # Reference to (M, rho); generated outside all timed regions.
+        "policy_ref": ("M", "rho", l),
+        # Unique ID for this synthetic ciphertext; outside online timing.
+        "ct_id": os.urandom(16).hex(),
         "c1": [group.random(G1) for _ in range(l)],
         "c2": [group.random(G1) for _ in range(l)],
         "c1_prime": [group.random(G1) for _ in range(l)],
@@ -416,15 +454,19 @@ def make_context(l):
         "attr_values": [group.random(ZR) for _ in range(l)],
         "omegas": [group.random(ZR) for _ in range(l)],
         "c0": group.random(GT),
+        # Synthetic input for the recovery-operation microbenchmark only.
+        # It is not a valid TA/AA partial-decryption result.
         "aggregate_partial": group.random(GT),
     }
 
 
 def build_token_pool(ctx, count):
-    return [
-        prepare_token(ctx["c1"], ctx["c2"])
-        for _ in range(count)
-    ]
+    """Pre-build a single-ciphertext FIFO pool outside online timing."""
+    return {
+        ctx["ct_id"]: deque(
+            prepare_token(ctx["c1"], ctx["c2"]) for _ in range(count)
+        )
+    }
 
 
 def timed_call(function, *args):
@@ -524,7 +566,7 @@ def paired_metric(
     ctx,
     baseline_function,
     ours_function,
-    tokens,
+    pools,
     metric_name,
     raw_rows,
 ):
@@ -532,7 +574,7 @@ def paired_metric(
     ours_samples = []
 
     total = WARMUP + ITERATIONS
-    assert len(tokens) == total
+    assert len(pools[ctx["ct_id"]]) == total
 
     for rep in range(total):
         measured = rep >= WARMUP
@@ -545,7 +587,7 @@ def paired_metric(
             if name == "baseline":
                 results[name] = timed_call(baseline_function, ctx)
             else:
-                results[name] = timed_call(ours_function, ctx, tokens[rep])
+                results[name] = timed_call(ours_function, ctx, pools)
 
             if PAIR_GAP_SEC > 0:
                 time.sleep(PAIR_GAP_SEC)
@@ -578,6 +620,7 @@ def paired_metric(
                 flush=True,
             )
 
+    assert not pools[ctx["ct_id"]], "Expected exactly one consumed token per run."
     return baseline_samples, ours_samples
 
 
@@ -585,9 +628,10 @@ def paired_metric(
 # Output
 # ============================================================
 
-RAW_FILE = "android_thermal_raw.csv"
-SUMMARY_FILE = "android_thermal_summary.csv"
-META_FILE = "android_thermal_metadata.json"
+# Keep original outputs intact, as timing now includes pool retrieval.
+RAW_FILE = "android_thermal_token_pool_raw.csv"
+SUMMARY_FILE = "android_thermal_token_pool_summary.csv"
+META_FILE = "android_thermal_token_pool_metadata.json"
 
 
 def save_raw(rows):
@@ -653,17 +697,37 @@ def save_metadata():
             "block_cooldown_sec": BLOCK_COOLDOWN_SEC,
             "pair_gap_sec": PAIR_GAP_SEC,
             "iteration_gap_sec": ITERATION_GAP_SEC,
-            "candidate_set_assumption": "|I| = l; one already-selected satisfied set",
+            "candidate_set_assumption": (
+                "|I| = l; one preselected candidate set; synthetic random inputs "
+                "are not guaranteed to satisfy the policy"
+            ),
+            "input_validity": (
+                "synthetic group elements and scalars, not an end-to-end "
+                "valid ciphertext or verified successful access"
+            ),
             "offline_baseline_order": "alternating B-F / F-B",
             "paired_metric_order": "alternating B-O / O-B",
             "scope": (
-                "post-authentication operation-level cryptographic timing; "
-                "not application-level end-to-end latency"
+                "post-authentication operation-level timing with in-memory "
+                "ciphertext-specific FIFO token lookup, single-threaded "
+                "state check/update and assembly; offline preparation excluded "
+                "from online timing; not application-level end-to-end latency"
+            ),
+            "token_pool": (
+                "one ciphertext-specific deque per metric; one token per "
+                "warm-up/measured invocation; no concurrency or persistence"
+            ),
+            "tokens_per_metric_pool": WARMUP + ITERATIONS,
+            "note_on_storage_table": (
+                "the separate serialized-storage experiment uses q=5; "
+                "its size is not the RAM footprint of this benchmark's pool"
             ),
             "excluded": [
                 "authentication",
                 "network/IPC",
                 "serialization",
+                "persistent token storage and crash recovery",
+                "concurrent synchronization",
                 "candidate-set enumeration",
                 "LSSS omega solving",
                 "XOR",
@@ -681,7 +745,7 @@ def save_metadata():
 # ============================================================
 
 def run():
-    print("# FINAL thermal-controlled Android benchmark", flush=True)
+    print("# Thermal-controlled Android benchmark: timed in-memory FIFO lookup", flush=True)
     print("# Device/Platform:", platform.platform(), flush=True)
     print("# Python:", platform.python_version(), flush=True)
     print("# Pairing group:", PAIRING_GROUP, flush=True)
@@ -703,9 +767,11 @@ def run():
 
         # Pools are generated BEFORE their online measurement blocks.
         # Their generation is not included in Ours online timing.
-        online_tokens = build_token_pool(ctx, total)
-        receiver_tokens = build_token_pool(ctx, total)
-        path_tokens = build_token_pool(ctx, total)
+        # Independent pools avoid sharing tokens between three metric blocks.
+        # Each has 60 tokens for 10 warm-ups + 50 measured calls, not q=5.
+        online_pools = build_token_pool(ctx, total)
+        receiver_pools = build_token_pool(ctx, total)
+        path_pools = build_token_pool(ctx, total)
 
         cooldown("offline/baseline matched block")
         print("  Measuring matched offline token vs baseline-online cost...", flush=True)
@@ -720,7 +786,7 @@ def run():
             ctx,
             baseline_online,
             ours_online,
-            online_tokens,
+            online_pools,
             "online_reenc",
             raw_rows,
         )
@@ -731,7 +797,7 @@ def run():
             ctx,
             baseline_receiver,
             ours_receiver,
-            receiver_tokens,
+            receiver_pools,
             "receiver_online_crypto",
             raw_rows,
         )
@@ -742,7 +808,7 @@ def run():
             ctx,
             baseline_path,
             ours_path,
-            path_tokens,
+            path_pools,
             "decryption_path_online_crypto",
             raw_rows,
         )
