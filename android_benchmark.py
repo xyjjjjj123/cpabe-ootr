@@ -4,7 +4,11 @@ import os
 import platform
 import statistics
 import time
+from collections import deque
 
+# Operation-level benchmark with synthetic ciphertext components; in-memory
+# FIFO lookup/check/update is timed. This is NOT a full protocol execution,
+# concurrent/persistent token store, or verified successful authorization.
 from charm.toolbox.pairinggroup import PairingGroup, ZR, G1, GT
 
 
@@ -20,8 +24,9 @@ ITERATIONS = 50
 
 PRE_BLOCK_COOLDOWN_SEC = 3.0
 
-RAW_FILE = "android_fig3_raw.csv"
-SUMMARY_FILE = "android_fig3_summary.csv"
+# New output names preserve the original experiment's CSV files.
+RAW_FILE = "android_fig3_token_pool_raw.csv"
+SUMMARY_FILE = "android_fig3_token_pool_summary.csv"
 
 group = PairingGroup(PAIRING_GROUP)
 
@@ -65,9 +70,18 @@ def assemble_reencrypted_ct(
 # Token preparation / consumption
 # ============================================================
 
+def sample_nonzero_z():
+    """Use the nonzero blinding-factor domain needed by final recovery."""
+    zero = group.init(ZR, 0)
+    z = group.random(ZR)
+    while z == zero:
+        z = group.random(ZR)
+    return z
+
+
 def prepare_token(ctx):
 
-    z = group.random(ZR)
+    z = sample_nonzero_z()
 
     c1_hat = [
         c ** z
@@ -89,11 +103,8 @@ def prepare_token(ctx):
 
 def consume_token(token):
 
-    # Single-thread operation-level benchmark:
-    # this models the required atomic consume state transition.
-    #
-    # A production implementation must enforce the same
-    # check-and-set atomically in its protected state store.
+    # Single-thread, in-memory state check/update only.
+    # This does NOT implement concurrent atomicity or crash-safe persistence.
 
     if token["used"]:
         raise RuntimeError(
@@ -102,6 +113,20 @@ def consume_token(token):
 
     token["used"] = True
 
+    return token
+
+
+def take_token(ctx, pools):
+    """Timed ciphertext-specific FIFO lookup, check/update, and removal.
+
+    Pool construction is outside the online timing. This is single-threaded
+    in-memory consumption, not a concurrent or persistent storage mechanism.
+    """
+    queue = pools[ctx["ct_id"]]
+    if not queue:
+        raise RuntimeError("Token pool exhausted; benchmark needs a fresh pool.")
+    token = consume_token(queue[0])
+    queue.popleft()
     return token
 
 
@@ -116,7 +141,7 @@ def consume_token(token):
 def baseline_online(ctx):
 
     # Fresh z is generated in the request-time path.
-    z = group.random(ZR)
+    z = sample_nonzero_z()
 
     c1_hat = [
         c ** z
@@ -159,16 +184,18 @@ def offline_token_operation(ctx):
 # Ours online token consumption
 #
 # 0 group exponentiations
+# + ciphertext-specific in-memory FIFO lookup
 # + single-use state transition
 # + ciphertext assembly
 # ============================================================
 
 def ours_online(
     ctx,
-    token
+    pools
 ):
 
-    token = consume_token(token)
+    # Lookup AND consumption are inside timed_call's start/end boundaries.
+    token = take_token(ctx, pools)
 
     ct_prime = assemble_reencrypted_ct(
         ctx["policy_ref"],
@@ -193,6 +220,9 @@ def make_context(l):
 
     return {
         "l": l,
+        # Unique for this synthetic ciphertext; assigned outside timing.
+        # The random group elements below are NOT from full CP-ABE encryption.
+        "ct_id": os.urandom(16).hex(),
 
         # Existing (M, rho) policy metadata.
         # Its generation and LSSS processing are outside the
@@ -277,7 +307,7 @@ def mean_std(values):
 def run():
 
     print(
-        "# Android Fig. 3 operation-level benchmark",
+        "# Android Fig. 3: in-memory FIFO pool lookup + single-use update + assembly",
         flush=True
     )
 
@@ -350,10 +380,11 @@ def run():
         # Offline preparation latency is measured separately.
         # ----------------------------------------------------
 
-        online_tokens = [
-            prepare_token(ctx)
-            for _ in range(total)
-        ]
+        # A ciphertext-specific FIFO pool; its generation is NOT timed.
+        # 60 tokens cover 10 warm-ups + 50 samples (not the q=5 storage test).
+        online_pools = {
+            ctx["ct_id"]: deque(prepare_token(ctx) for _ in range(total))
+        }
 
         # ----------------------------------------------------
         # Small cooldown before each policy-size block.
@@ -463,7 +494,7 @@ def run():
                         timed_call(
                             ours_online,
                             ctx,
-                            online_tokens[rep]
+                            online_pools
                         )
                     )
 
@@ -587,6 +618,8 @@ def run():
             f"Ours-online={om:.6f}±{osd:.6f} ms",
             flush=True,
         )
+
+        assert not online_pools[ctx["ct_id"]], "Expected exactly one consumed token per run."
 
         # ----------------------------------------------------
         # Save checkpoint after each l.
